@@ -1,13 +1,16 @@
-import { NextRequest, NextResponse } from "next/server";
-import { auth } from "../../auth";
 import { getServerSideConfig } from "@/app/config/server";
 import {
+  TENCENT_BASE_URL,
   ApiPath,
-  GEMINI_BASE_URL,
-  Google,
   ModelProvider,
+  ServiceProvider,
+  Tencent,
 } from "@/app/constant";
 import { prettyObject } from "@/app/utils/format";
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/app/api/auth";
+import { isModelAvailableInServer } from "@/app/utils/model";
+import { getHeader } from "@/app/utils/tencent";
 
 const serverConfig = getServerSideConfig();
 
@@ -15,40 +18,24 @@ async function handle(
   req: NextRequest,
   { params }: { params: { path: string[] } },
 ) {
-  console.log("[Google Route] params ", params);
+  console.log("[Tencent Route] params ", params);
 
   if (req.method === "OPTIONS") {
     return NextResponse.json({ body: "OK" }, { status: 200 });
   }
 
-  const authResult = auth(req, ModelProvider.GeminiPro);
+  const authResult = auth(req, ModelProvider.Hunyuan);
   if (authResult.error) {
     return NextResponse.json(authResult, {
       status: 401,
     });
   }
 
-  const bearToken = req.headers.get("Authorization") ?? "";
-  const token = bearToken.trim().replaceAll("Bearer ", "").trim();
-
-  const apiKey = token ? token : serverConfig.googleApiKey;
-
-  if (!apiKey) {
-    return NextResponse.json(
-      {
-        error: true,
-        message: `missing GOOGLE_API_KEY in server env vars`,
-      },
-      {
-        status: 401,
-      },
-    );
-  }
   try {
-    const response = await request(req, apiKey);
+    const response = await request(req);
     return response;
   } catch (e) {
-    console.error("[Google] ", e);
+    console.error("[Tencent] ", e);
     return NextResponse.json(prettyObject(e));
   }
 }
@@ -58,26 +45,29 @@ export const POST = handle;
 
 export const runtime = "edge";
 export const preferredRegion = [
+  "arn1",
   "bom1",
+  "cdg1",
   "cle1",
   "cpt1",
+  "dub1",
+  "fra1",
   "gru1",
   "hnd1",
   "iad1",
   "icn1",
   "kix1",
+  "lhr1",
   "pdx1",
   "sfo1",
   "sin1",
   "syd1",
 ];
 
-async function request(req: NextRequest, apiKey: string) {
+async function request(req: NextRequest) {
   const controller = new AbortController();
 
-  let baseUrl = serverConfig.googleUrl || GEMINI_BASE_URL;
-
-  let path = `${req.nextUrl.pathname}`.replaceAll(ApiPath.Google, "");
+  let baseUrl = serverConfig.tencentUrl || TENCENT_BASE_URL;
 
   if (!baseUrl.startsWith("http")) {
     baseUrl = `https://${baseUrl}`;
@@ -87,7 +77,6 @@ async function request(req: NextRequest, apiKey: string) {
     baseUrl = baseUrl.slice(0, -1);
   }
 
-  console.log("[Proxy] ", path);
   console.log("[Base Url]", baseUrl);
 
   const timeoutId = setTimeout(
@@ -96,19 +85,19 @@ async function request(req: NextRequest, apiKey: string) {
     },
     10 * 60 * 1000,
   );
-  const fetchUrl = `${baseUrl}${path}?key=${apiKey}${
-    req?.nextUrl?.searchParams?.get("alt") === "sse" ? "&alt=sse" : ""
-  }`;
 
-  console.log("[Fetch Url] ", fetchUrl);
+  const fetchUrl = baseUrl;
+
+  const body = await req.text();
+  const headers = await getHeader(
+    body,
+    serverConfig.tencentSecretId as string,
+    serverConfig.tencentSecretKey as string,
+  );
   const fetchOptions: RequestInit = {
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": "no-store",
-    },
+    headers,
     method: req.method,
-    body: req.body,
-    // to fix #2485: https://stackoverflow.com/questions/55920957/cloudflare-worker-typeerror-one-time-use-body
+    body,
     redirect: "manual",
     // @ts-ignore
     duplex: "half",
@@ -117,6 +106,7 @@ async function request(req: NextRequest, apiKey: string) {
 
   try {
     const res = await fetch(fetchUrl, fetchOptions);
+
     // to prevent browser prompt for credentials
     const newHeaders = new Headers(res.headers);
     newHeaders.delete("www-authenticate");
